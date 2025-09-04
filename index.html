@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Exam Mail Finder – Admit Cards / Results</title>
+<style>
+:root{--bg:#0f1220;--card:#181c2f;--ink:#eef1ff;--muted:#9aa3c7;--line:#2a3052;--ok:#7bd88f;--warn:#ffd166;--bad:#ff7575;--accent:#6ca8ff}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
+header,footer{padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
+h1{margin:0;font-size:18px}
+.wrap{max-width:1000px;margin:0 auto;padding:16px}
+.panel{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 0 0 1px rgba(255,255,255,.05) inset}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select,button{background:#12162a;border:1px solid var(--line);color:var(--ink);padding:8px 10px;border-radius:8px}
+button{cursor:pointer}
+.primary{background:linear-gradient(180deg,#2f67ff,#2149c8);border:none}
+.badge{padding:3px 8px;border-radius:999px;border:1px solid var(--line);font-size:12px;margin-left:6px}
+.card{background:#12162a;border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:10px}
+a{color:var(--accent);text-decoration:none}
+small{color:var(--muted)}
+kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 6px}
+.hide{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Exam Mail Finder</h1>
+  <div class="row">
+    <span id="who" class="badge">Signed out</span>
+    <button id="signin" class="primary">Sign in with Google</button>
+    <button id="signout" class="hide">Sign out</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <div class="row">
+      <b>Find:</b>
+      <label><input type="checkbox" class="kw" value='"admit card"' checked> Admit card</label>
+      <label><input type="checkbox" class="kw" value='"hall ticket"' checked> Hall ticket</label>
+      <label><input type="checkbox" class="kw" value='"call letter"'> Call letter</label>
+      <label><input type="checkbox" class="kw" value='result' checked> Result</label>
+      <label><input type="checkbox" class="kw" value='"score card"'> Score card</label>
+      <label><input type="checkbox" class="kw" value='marksheet'> Marksheet</label>
+      <label><input type="checkbox" class="kw" value='"rank card"'> Rank card</label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label>From (optional): <input id="froms" placeholder="ssc, nta, upsc, ibps, mpsc, rrb, sbi"></label>
+      <label>Newer than:
+        <select id="age">
+          <option value="6m">6 months</option>
+          <option value="12m" selected>12 months</option>
+          <option value="24m">24 months</option>
+          <option value="">Any time</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="attachments" checked> Prefer has:attachment</label>
+      <button id="search" class="primary">Search Gmail</button>
+    </div>
+    <div style="margin-top:8px"><small>Tip: refine with Gmail syntax later (e.g. <kbd>subject:"admit card" newer_than:6m</kbd>). Your mail is read locally with read-only access.</small></div>
+  </div>
+
+  <div id="results"></div>
+  <div id="moreWrap" class="hide" style="margin-top:10px"><button id="more">Load more</button></div>
+</div>
+
+<footer class="row" style="justify-content:space-between">
+  <small>Scopes: gmail.readonly • Runs entirely in your browser (GitHub Pages).</small>
+  <small><a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Revoke access</a></small>
+</footer>
+
+<!-- Google Identity Services -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+/*** CONFIG – replace with your own Web Client ID from Google Cloud ***/
+const CLIENT_ID = "PASTE_YOUR_OAUTH_WEB_CLIENT_ID_HERE";
+const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+
+let accessToken = null;
+let nextPageToken = null;
+let lastQuery = null;
+
+/* ---------- Auth ---------- */
+let tokenClient;
+window.onload = () => {
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: GMAIL_SCOPE,
+    callback: (tok) => {
+      accessToken = tok.access_token;
+      document.getElementById('who').textContent = "Signed in";
+      document.getElementById('signout').classList.remove('hide');
+      runSearch(); // auto-search after sign-in
+    }
+  });
+
+  document.getElementById('signin').onclick = () => tokenClient.requestAccessToken({prompt: 'consent'});
+  document.getElementById('signout').onclick = () => {
+    if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
+    accessToken = null; nextPageToken = null;
+    document.getElementById('results').innerHTML = "";
+    document.getElementById('moreWrap').classList.add('hide');
+    document.getElementById('who').textContent = "Signed out";
+  };
+
+  document.getElementById('search').onclick = runSearch;
+  document.getElementById('more').onclick = () => fetchMessages(lastQuery, nextPageToken);
+};
+
+/* ---------- Build Gmail query ---------- */
+function buildQuery() {
+  const kws = [...document.querySelectorAll('.kw:checked')].map(cb => cb.value);
+  let q = "";
+  if (kws.length) q += "(" + kws.join(" OR ") + ")";
+  const age = document.getElementById('age').value;
+  if (age) q += " newer_than:" + age;
+  const froms = document.getElementById('froms').value.trim();
+  if (froms) {
+    const doms = froms.split(",").map(s => s.trim()).filter(Boolean);
+    if (doms.length) q += " (" + doms.map(d => `from:${d}`).join(" OR ") + ")";
+  }
+  if (document.getElementById('attachments').checked) q += " has:attachment";
+  q += " -in:spam -in:trash category:primary";
+  return q.trim();
+}
+
+/* ---------- Gmail REST helpers ---------- */
+async function gFetch(path, params = {}) {
+  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/" + path);
+  Object.entries(params).forEach(([k,v]) => url.searchParams.set(k,v));
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function fmtDate(ms) {
+  const d = new Date(Number(ms));
+  return d.toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
+}
+
+/* ---------- Search & render ---------- */
+async function runSearch() {
+  if (!accessToken) { document.getElementById('signin').click(); return; }
+  document.getElementById('results').innerHTML = "";
+  document.getElementById('moreWrap').classList.add('hide');
+  nextPageToken = null;
+  lastQuery = buildQuery();
+  await fetchMessages(lastQuery);
+}
+
+async function fetchMessages(q, pageTok=null) {
+  try {
+    const list = await gFetch("messages", { q, maxResults: 20, pageToken: pageTok||"" });
+    nextPageToken = list.nextPageToken || null;
+    if (nextPageToken) document.getElementById('moreWrap').classList.remove('hide');
+    else document.getElementById('moreWrap').classList.add('hide');
+
+    if (!list.messages || !list.messages.length) {
+      if (!pageTok) document.getElementById('results').innerHTML = `<div class="card">No matching emails found.</div>`;
+      return;
+    }
+
+    for (const m of list.messages) {
+      // Get headers only (fast)
+      const msg = await gFetch(`messages/${m.id}`, { format: "metadata", metadataHeaders: "Subject,From,Date" });
+      const h = (name) => (msg.payload.headers.find(x=>x.name===name)?.value || "");
+      const subject = h("Subject");
+      const from = h("From");
+      const date = h("Date");
+      // Quick peek for attachments count (need full payload if any)
+      let attachCount = 0;
+      if (msg.payload.parts) {
+        const stack = [...msg.payload.parts];
+        while (stack.length) {
+          const p = stack.pop();
+          if (p.filename && p.body?.attachmentId) attachCount++;
+          if (p.parts) stack.push(...p.parts);
+        }
+      }
+
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
+        <div class="row" style="justify-content:space-between">
+          <div><a target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/${m.id}"><b>${escapeHtml(subject||"(no subject)")}</b></a></div>
+          <div><small>${escapeHtml(date||fmtDate(msg.internalDate))}</small></div>
+        </div>
+        <div><small>${escapeHtml(from)}</small></div>
+        <div id="snip-${m.id}" style="margin-top:6px"><small>Loading snippet…</small></div>
+        <div id="att-${m.id}" class="row" style="margin-top:8px"></div>
+      `;
+      document.getElementById('results').appendChild(card);
+
+      // Fetch snippet + attachments lazily (full format)
+      const full = await gFetch(`messages/${m.id}`, { format: "full" });
+      document.getElementById(`snip-${m.id}`).innerHTML = `<small>${escapeHtml(full.snippet||"")}</small>`;
+      const atts = findAttachments(full);
+      if (atts.length) {
+        const box = document.getElementById(`att-${m.id}`);
+        for (const a of atts) {
+          const btn = document.createElement("button");
+          btn.textContent = `⬇ ${a.filename}`;
+          btn.onclick = () => downloadAttachment(full.id, a.attachmentId, a.filename);
+          box.appendChild(btn);
+        }
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    document.getElementById('results').innerHTML = `<div class="card" style="border-color:var(--bad)">Error: ${escapeHtml(e.message||String(e))}</div>`;
+  }
+}
+
+function findAttachments(fullMsg){
+  const out=[];
+  const walk=(p)=>{
+    if (!p) return;
+    if (p.filename && p.body && p.body.attachmentId) out.push({filename:p.filename, attachmentId:p.body.attachmentId});
+    if (p.parts) p.parts.forEach(walk);
+  };
+  walk(fullMsg.payload);
+  return out;
+}
+
+async function downloadAttachment(msgId, attId, filename){
+  const data = await gFetch(`messages/${msgId}/attachments/${attId}`);
+  const b64 = (data.data||"").replace(/-/g,'+').replace(/_/g,'/'); // URL-safe -> base64
+  const blob = b64ToBlob(b64);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || "attachment";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ---------- utils ---------- */
+function escapeHtml(s){ return String(s||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])) }
+function b64ToBlob(b64){
+  const byteChars = atob(b64);
+  const arr = new Uint8Array(byteChars.length);
+  for (let i=0;i<byteChars.length;i++) arr[i]=byteChars.charCodeAt(i);
+  return new Blob([arr], {type:"application/octet-stream"});
+}
+</script>
+</body>
+</html>
