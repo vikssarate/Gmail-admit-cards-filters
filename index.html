@@ -6,7 +6,8 @@
 <title>Exam Mail Finder – Admit Cards / Results</title>
 <style>
 :root{--bg:#0f1220;--card:#181c2f;--ink:#eef1ff;--muted:#9aa3c7;--line:#2a3052;--ok:#7bd88f;--warn:#ffd166;--bad:#ff7575;--accent:#6ca8ff}
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
 header,footer{padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
 h1{margin:0;font-size:18px}
 .wrap{max-width:1000px;margin:0 auto;padding:16px}
@@ -21,6 +22,8 @@ a{color:var(--accent);text-decoration:none}
 small{color:var(--muted)}
 kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 6px}
 .hide{display:none}
+.spinner{width:16px;height:16px;border:2px solid #ffffff33;border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -56,40 +59,56 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
         </select>
       </label>
       <label><input type="checkbox" id="attachments" checked> Prefer has:attachment</label>
+      <label><input type="checkbox" id="pdfOnly"> PDFs only</label>
       <button id="search" class="primary">Search Gmail</button>
+      <button id="saveFilters">Save filters</button>
     </div>
     <div style="margin-top:8px"><small>Tip: refine with Gmail syntax later (e.g. <kbd>subject:"admit card" newer_than:6m</kbd>). Your mail is read locally with read-only access.</small></div>
   </div>
 
+  <div id="status" class="row hide" style="margin-top:10px"><div class="spinner"></div><small> &nbsp;Working…</small></div>
   <div id="results"></div>
   <div id="moreWrap" class="hide" style="margin-top:10px"><button id="more">Load more</button></div>
 </div>
 
 <footer class="row" style="justify-content:space-between">
-  <small>Scopes: gmail.readonly • Runs entirely in your browser (GitHub Pages).</small>
+  <small>Scopes: gmail.readonly, openid, email, profile • Runs entirely in your browser (GitHub Pages).</small>
   <small><a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Revoke access</a></small>
 </footer>
 
 <!-- Google Identity Services -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
-/*** CONFIG – replace with your own Web Client ID from Google Cloud ***/
-const CLIENT_ID = "PASTE_YOUR_OAUTH_WEB_CLIENT_ID_HERE";
-const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+/*** CONFIG – your Web Client ID (safe to expose) ***/
+const CLIENT_ID = "400018244267-telreonavckttsvjpavquqkg4c6nrsej.apps.googleusercontent.com";
+const SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "openid","email","profile"
+].join(" ");
 
 let accessToken = null;
 let nextPageToken = null;
 let lastQuery = null;
+let tokenClient;
 
 /* ---------- Auth ---------- */
-let tokenClient;
 window.onload = () => {
+  // Restore saved filters
+  try{
+    const s = JSON.parse(localStorage.getItem("examfinder.filters") || "{}");
+    if (s.kws) document.querySelectorAll(".kw").forEach(cb=> cb.checked = !!s.kws.includes(cb.value));
+    if (s.froms) document.getElementById("froms").value = s.froms;
+    if (s.age!==undefined) document.getElementById("age").value = s.age;
+    if (s.attach!==undefined) document.getElementById("attachments").checked = !!s.attach;
+    if (s.pdfOnly!==undefined) document.getElementById("pdfOnly").checked = !!s.pdfOnly;
+  }catch(_){}
+
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
-    scope: GMAIL_SCOPE,
-    callback: (tok) => {
+    scope: SCOPES,
+    callback: async (tok) => {
       accessToken = tok.access_token;
-      document.getElementById('who').textContent = "Signed in";
+      await showUser();
       document.getElementById('signout').classList.remove('hide');
       runSearch(); // auto-search after sign-in
     }
@@ -106,7 +125,19 @@ window.onload = () => {
 
   document.getElementById('search').onclick = runSearch;
   document.getElementById('more').onclick = () => fetchMessages(lastQuery, nextPageToken);
+  document.getElementById('saveFilters').onclick = saveFilters;
 };
+
+function saveFilters(){
+  const s = {
+    kws: [...document.querySelectorAll(".kw:checked")].map(cb=>cb.value),
+    froms: document.getElementById("froms").value,
+    age: document.getElementById("age").value,
+    attach: document.getElementById("attachments").checked,
+    pdfOnly: document.getElementById("pdfOnly").checked
+  };
+  localStorage.setItem("examfinder.filters", JSON.stringify(s));
+}
 
 /* ---------- Build Gmail query ---------- */
 function buildQuery() {
@@ -121,19 +152,49 @@ function buildQuery() {
     if (doms.length) q += " (" + doms.map(d => `from:${d}`).join(" OR ") + ")";
   }
   if (document.getElementById('attachments').checked) q += " has:attachment";
+  if (document.getElementById('pdfOnly').checked) q += " filename:pdf";
   q += " -in:spam -in:trash category:primary";
   return q.trim();
 }
 
-/* ---------- Gmail REST helpers ---------- */
+/* ---------- Gmail & Google helpers ---------- */
 async function gFetch(path, params = {}) {
+  await ensureToken();
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/" + path);
   Object.entries(params).forEach(([k,v]) => url.searchParams.set(k,v));
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (res.status === 401) { // token expired → refresh once
+    await refreshToken();
+    return gFetch(path, params);
+  }
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
-
+async function ensureToken(){
+  if (!accessToken) await new Promise(r=> {
+    tokenClient.callback = () => { accessToken = google.accounts.oauth2.hasGrantedAllScopes ? accessToken : null; r(); };
+    tokenClient.requestAccessToken({prompt: 'consent'});
+  });
+}
+async function refreshToken(){
+  return new Promise((resolve) => {
+    tokenClient.callback = (tok)=>{ accessToken = tok.access_token; resolve(); };
+    tokenClient.requestAccessToken({prompt:''}); // silent refresh
+  });
+}
+async function showUser(){
+  try{
+    const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo",{headers:{Authorization:`Bearer ${accessToken}`}});
+    if (r.ok){
+      const u = await r.json();
+      document.getElementById('who').textContent = u.email ? `Signed in as ${u.email}` : "Signed in";
+    }else{
+      document.getElementById('who').textContent = "Signed in";
+    }
+  }catch(_){
+    document.getElementById('who').textContent = "Signed in";
+  }
+}
 function fmtDate(ms) {
   const d = new Date(Number(ms));
   return d.toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
@@ -146,7 +207,9 @@ async function runSearch() {
   document.getElementById('moreWrap').classList.add('hide');
   nextPageToken = null;
   lastQuery = buildQuery();
+  document.getElementById('status').classList.remove('hide');
   await fetchMessages(lastQuery);
+  document.getElementById('status').classList.add('hide');
 }
 
 async function fetchMessages(q, pageTok=null) {
@@ -161,51 +224,54 @@ async function fetchMessages(q, pageTok=null) {
       return;
     }
 
-    for (const m of list.messages) {
-      // Get headers only (fast)
-      const msg = await gFetch(`messages/${m.id}`, { format: "metadata", metadataHeaders: "Subject,From,Date" });
-      const h = (name) => (msg.payload.headers.find(x=>x.name===name)?.value || "");
+    // Fetch headers fast, then full bodies in parallel
+    const headerPromises = list.messages.map(m => gFetch(`messages/${m.id}`, { format: "metadata", metadataHeaders: "Subject,From,Date" }).then(msg=>({m: m, meta: msg})));
+    const headerResults = await Promise.all(headerPromises);
+
+    for (const {m, meta} of headerResults) {
+      const h = (name) => (meta.payload.headers.find(x=>x.name===name)?.value || "");
       const subject = h("Subject");
       const from = h("From");
       const date = h("Date");
-      // Quick peek for attachments count (need full payload if any)
-      let attachCount = 0;
-      if (msg.payload.parts) {
-        const stack = [...msg.payload.parts];
-        while (stack.length) {
-          const p = stack.pop();
-          if (p.filename && p.body?.attachmentId) attachCount++;
-          if (p.parts) stack.push(...p.parts);
-        }
-      }
 
       const card = document.createElement("div");
       card.className = "card";
+      card.id = `card-${m.id}`;
       card.innerHTML = `
         <div class="row" style="justify-content:space-between">
           <div><a target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/${m.id}"><b>${escapeHtml(subject||"(no subject)")}</b></a></div>
-          <div><small>${escapeHtml(date||fmtDate(msg.internalDate))}</small></div>
+          <div><small>${escapeHtml(date||fmtDate(meta.internalDate))}</small></div>
         </div>
         <div><small>${escapeHtml(from)}</small></div>
-        <div id="snip-${m.id}" style="margin-top:6px"><small>Loading snippet…</small></div>
+        <div class="row" style="margin-top:6px"><div class="spinner"></div><small> &nbsp;Loading snippet & attachments…</small></div>
+        <div id="snip-${m.id}" style="margin-top:6px"></div>
         <div id="att-${m.id}" class="row" style="margin-top:8px"></div>
       `;
       document.getElementById('results').appendChild(card);
+    }
 
-      // Fetch snippet + attachments lazily (full format)
-      const full = await gFetch(`messages/${m.id}`, { format: "full" });
-      document.getElementById(`snip-${m.id}`).innerHTML = `<small>${escapeHtml(full.snippet||"")}</small>`;
-      const atts = findAttachments(full);
-      if (atts.length) {
-        const box = document.getElementById(`att-${m.id}`);
-        for (const a of atts) {
-          const btn = document.createElement("button");
-          btn.textContent = `⬇ ${a.filename}`;
-          btn.onclick = () => downloadAttachment(full.id, a.attachmentId, a.filename);
-          box.appendChild(btn);
+    // Full fetch in parallel (limit concurrency a bit)
+    const queue = headerResults.map(x=>x.m.id);
+    const workers = Math.min(6, queue.length);
+    await Promise.all(new Array(workers).fill(0).map(async ()=>{
+      while (queue.length){
+        const id = queue.shift();
+        const full = await gFetch(`messages/${id}`, { format: "full" });
+        document.querySelector(`#card-${id} .row .spinner`)?.parentElement?.remove(); // remove loader
+        document.getElementById(`snip-${id}`).innerHTML = `<small>${escapeHtml(full.snippet||"")}</small>`;
+        const atts = findAttachments(full);
+        if (atts.length) {
+          const box = document.getElementById(`att-${id}`);
+          for (const a of atts) {
+            const btn = document.createElement("button");
+            btn.textContent = `⬇ ${a.filename}`;
+            btn.onclick = () => downloadAttachment(full.id, a.attachmentId, a.filename);
+            box.appendChild(btn);
+          }
         }
       }
-    }
+    }));
+
   } catch (e) {
     console.error(e);
     document.getElementById('results').innerHTML = `<div class="card" style="border-color:var(--bad)">Error: ${escapeHtml(e.message||String(e))}</div>`;
@@ -220,6 +286,10 @@ function findAttachments(fullMsg){
     if (p.parts) p.parts.forEach(walk);
   };
   walk(fullMsg.payload);
+  // If user chose PDFs only, filter here (extra safety beyond filename:pdf)
+  if (document.getElementById('pdfOnly').checked){
+    return out.filter(a => /\.pdf$/i.test(a.filename||""));
+  }
   return out;
 }
 
