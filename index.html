@@ -161,7 +161,11 @@ function buildQuery() {
 async function gFetch(path, params = {}) {
   await ensureToken();
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/" + path);
-  Object.entries(params).forEach(([k,v]) => url.searchParams.set(k,v));
+  // Support arrays (e.g., repeated metadataHeaders)
+  for (const [k, v] of Object.entries(params)) {
+    if (Array.isArray(v)) v.forEach(val => url.searchParams.append(k, val));
+    else if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
+  }
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (res.status === 401) { // token expired → refresh once
     await refreshToken();
@@ -171,10 +175,12 @@ async function gFetch(path, params = {}) {
   return res.json();
 }
 async function ensureToken(){
-  if (!accessToken) await new Promise(r=> {
-    tokenClient.callback = () => { accessToken = google.accounts.oauth2.hasGrantedAllScopes ? accessToken : null; r(); };
-    tokenClient.requestAccessToken({prompt: 'consent'});
-  });
+  if (!accessToken) {
+    await new Promise(r=>{
+      tokenClient.callback = (tok)=>{ accessToken = tok.access_token; r(); };
+      tokenClient.requestAccessToken({prompt:'consent'});
+    });
+  }
 }
 async function refreshToken(){
   return new Promise((resolve) => {
@@ -225,39 +231,45 @@ async function fetchMessages(q, pageTok=null) {
     }
 
     // Fetch headers fast, then full bodies in parallel
-    const headerPromises = list.messages.map(m => gFetch(`messages/${m.id}`, { format: "metadata", metadataHeaders: "Subject,From,Date" }).then(msg=>({m: m, meta: msg})));
+    const headerPromises = list.messages.map(m =>
+      gFetch(`messages/${m.id}`, {
+        format: "metadata",
+        metadataHeaders: ["Subject","From","Date"]   // repeated params
+      }).then(meta => ({m, meta})).catch(()=>({m, meta:{}}))
+    );
     const headerResults = await Promise.all(headerPromises);
 
     for (const {m, meta} of headerResults) {
-      const h = (name) => (meta.payload.headers.find(x=>x.name===name)?.value || "");
-      const subject = h("Subject");
-      const from = h("From");
-      const date = h("Date");
+      const headers = meta.payload?.headers || [];
+      const getH = (name) => (headers.find(x=>x.name===name)?.value || "");
+      const subject = getH("Subject") || "(no subject)";
+      const from    = getH("From") || "";
+      const dateStr = getH("Date") || (meta.internalDate ? fmtDate(meta.internalDate) : "");
 
       const card = document.createElement("div");
       card.className = "card";
       card.id = `card-${m.id}`;
       card.innerHTML = `
         <div class="row" style="justify-content:space-between">
-          <div><a target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/${m.id}"><b>${escapeHtml(subject||"(no subject)")}</b></a></div>
-          <div><small>${escapeHtml(date||fmtDate(meta.internalDate))}</small></div>
+          <div><a target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/${m.id}"><b>${escapeHtml(subject)}</b></a></div>
+          <div><small>${escapeHtml(dateStr)}</small></div>
         </div>
         <div><small>${escapeHtml(from)}</small></div>
-        <div class="row" style="margin-top:6px"><div class="spinner"></div><small> &nbsp;Loading snippet & attachments…</small></div>
+        <div id="load-${m.id}" class="row" style="margin-top:6px"><div class="spinner"></div><small> &nbsp;Loading snippet & attachments…</small></div>
         <div id="snip-${m.id}" style="margin-top:6px"></div>
         <div id="att-${m.id}" class="row" style="margin-top:8px"></div>
       `;
       document.getElementById('results').appendChild(card);
     }
 
-    // Full fetch in parallel (limit concurrency a bit)
+    // Full fetch in parallel (limit concurrency)
     const queue = headerResults.map(x=>x.m.id);
     const workers = Math.min(6, queue.length);
     await Promise.all(new Array(workers).fill(0).map(async ()=>{
       while (queue.length){
         const id = queue.shift();
         const full = await gFetch(`messages/${id}`, { format: "full" });
-        document.querySelector(`#card-${id} .row .spinner`)?.parentElement?.remove(); // remove loader
+        document.getElementById(`load-${id}`)?.remove();
         document.getElementById(`snip-${id}`).innerHTML = `<small>${escapeHtml(full.snippet||"")}</small>`;
         const atts = findAttachments(full);
         if (atts.length) {
