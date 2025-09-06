@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Exam Mail Finder – Admit Cards / Results</title>
+<style>
+:root{--bg:#0f1220;--card:#181c2f;--ink:#eef1ff;--muted:#9aa3c7;--line:#2a3052;--ok:#7bd88f;--warn:#ffd166;--bad:#ff7575;--accent:#6ca8ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial}
+header,footer{padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
+h1{margin:0;font-size:18px}
+.wrap{max-width:1000px;margin:0 auto;padding:16px}
+.panel{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 0 0 1px rgba(255,255,255,.05) inset}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select,button{background:#12162a;border:1px solid var(--line);color:var(--ink);padding:8px 10px;border-radius:8px}
+button{cursor:pointer}
+.primary{background:linear-gradient(180deg,#2f67ff,#2149c8);border:none}
+.badge{padding:3px 8px;border-radius:999px;border:1px solid var(--line);font-size:12px;margin-left:6px}
+.card{background:#12162a;border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:10px}
+a{color:var(--accent);text-decoration:none}
+small{color:var(--muted)}
+kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 6px}
+.hide{display:none}
+.spinner{width:16px;height:16px;border:2px solid #ffffff33;border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Tabs */
+.tabs{display:flex;gap:8px;margin-bottom:8px}
+.tabbtn{border:1px solid var(--line);background:#12162a;padding:8px 12px;border-radius:9px}
+.tabbtn.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+
+/* Pills line showing what we search in this tab */
+.pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.pill{border:1px solid var(--line);border-radius:999px;padding:4px 8px;font-size:12px;background:#101429}
+</style>
+</head>
+<body>
+<header>
+  <h1>Exam Mail Finder</h1>
+  <div class="row">
+    <span id="who" class="badge">Signed out</span>
+    <button id="signin" class="primary">Sign in with Google</button>
+    <button id="signout" class="hide">Sign out</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tabbtn active" id="tab-apps">Applications / Registration</button>
+      <button class="tabbtn" id="tab-admit">Admit Cards / Hall Tickets</button>
+    </div>
+
+    <!-- Filters -->
+    <div class="row">
+      <label>From (optional): <input id="froms" placeholder="ssc, nta, upsc, ibps, mpsc, rrb, sbi"></label>
+      <label>Newer than:
+        <select id="age">
+          <option value="6m">6 months</option>
+          <option value="12m" selected>12 months</option>
+          <option value="24m">24 months</option>
+          <option value="">Any time</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="attachments"> Require attachment</label>
+      <label><input type="checkbox" id="pdfOnly"> PDFs only</label>
+      <button id="search" class="primary">Search Gmail</button>
+      <button id="saveFilters">Save filters</button>
+    </div>
+
+    <!-- Shows which keywords this tab uses -->
+    <div class="pills" id="searchPills"></div>
+
+    <div style="margin-top:8px">
+      <small>Tip: refine later with Gmail syntax (e.g. <kbd>subject:"admit card" newer_than:6m</kbd>). Your mail is read locally with read-only access.</small>
+    </div>
+  </div>
+
+  <div id="status" class="row hide" style="margin-top:10px"><div class="spinner"></div><small> &nbsp;Working…</small></div>
+  <div id="results"></div>
+  <div id="moreWrap" class="hide" style="margin-top:10px"><button id="more">Load more</button></div>
+</div>
+
+<footer class="row" style="justify-content:space-between">
+  <small>Scopes: gmail.readonly, openid, email, profile • Runs entirely in your browser (GitHub Pages).</small>
+  <small><a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Revoke access</a></small>
+</footer>
+
+<!-- Google Identity Services -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+/*** CONFIG – your Web Client ID (safe to expose) ***/
+const CLIENT_ID = "400018244267-telreonavckttsvjpavquqkg4c6nrsej.apps.googleusercontent.com";
+const SCOPES   = ["https://www.googleapis.com/auth/gmail.readonly","openid","email","profile"].join(" ");
+
+/* Tab profiles (queries & defaults) */
+const PROFILES = {
+  apps: {
+    name: "Applications / Registration",
+    subjectQuery:
+      'subject:(application OR registration OR "provisional registration" OR "registration number" OR "complete registration" OR acknowledgement OR "application submitted" OR "application successful")',
+    pills: ["application","registration","provisional registration","registration number","complete registration","acknowledgement","application submitted","application successful"],
+    defaults: { attachments:false, pdfOnly:false, age:"12m" }
+  },
+  admit: {
+    name: "Admit Cards / Hall Tickets",
+    subjectQuery:
+      'subject:("admit card" OR "hall ticket" OR "call letter" OR "e-admit" OR "exam city intimation" OR "exam centre" OR "download admit card")',
+    pills: ["admit card","hall ticket","call letter","e-admit","exam city intimation","exam centre","download admit card"],
+    defaults: { attachments:true, pdfOnly:false, age:"12m" }
+  }
+};
+
+let activeTab = "apps";
+let accessToken = null, nextPageToken = null, lastQuery = null, tokenClient;
+
+/* ---------- Auth ---------- */
+window.onload = () => {
+  restoreFilters();            // per-tab
+  setupAuth();
+  wireUI();
+  renderPills();
+};
+
+function setupAuth(){
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: SCOPES,
+    callback: async (tok) => {
+      accessToken = tok.access_token;
+      await showUser();
+      document.getElementById('signout').classList.remove('hide');
+      runSearch(); // auto-search after sign-in
+    }
+  });
+}
+
+function wireUI(){
+  document.getElementById('signin').onclick  = () => tokenClient.requestAccessToken({prompt:'consent'});
+  document.getElementById('signout').onclick = () => {
+    if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
+    accessToken=null; nextPageToken=null;
+    document.getElementById('results').innerHTML="";
+    document.getElementById('moreWrap').classList.add('hide');
+    document.getElementById('who').textContent="Signed out";
+  };
+  document.getElementById('tab-apps').onclick  = () => switchTab("apps");
+  document.getElementById('tab-admit').onclick = () => switchTab("admit");
+  document.getElementById('search').onclick    = runSearch;
+  document.getElementById('more').onclick      = () => fetchMessages(lastQuery, nextPageToken);
+  document.getElementById('saveFilters').onclick = saveFilters;
+}
+
+function switchTab(tab){
+  if (activeTab===tab) return;
+  activeTab=tab;
+  document.getElementById('tab-apps').classList.toggle('active',tab==="apps");
+  document.getElementById('tab-admit').classList.toggle('active',tab==="admit");
+  restoreFilters();
+  renderPills();
+  runSearch();
+}
+
+function renderPills(){
+  document.getElementById('searchPills').innerHTML =
+    PROFILES[activeTab].pills.map(p=>`<span class="pill">${p}</span>`).join("");
+}
+
+function saveFilters(){
+  const key = `examfinder.filters.${activeTab}`;
+  const s = {
+    froms: document.getElementById("froms").value,
+    age: document.getElementById("age").value,
+    attachments: document.getElementById("attachments").checked,
+    pdfOnly: document.getElementById("pdfOnly").checked
+  };
+  localStorage.setItem(key, JSON.stringify(s));
+}
+
+function restoreFilters(){
+  const key = `examfinder.filters.${activeTab}`;
+  let s=null; try{ s = JSON.parse(localStorage.getItem(key)||"null"); }catch(_){}
+  const d = PROFILES[activeTab].defaults;
+  document.getElementById("froms").value = s?.froms || "";
+  document.getElementById("age").value   = s?.age ?? d.age;
+  document.getElementById("attachments").checked = s?.attachments ?? d.attachments;
+  document.getElementById("pdfOnly").checked     = s?.pdfOnly ?? d.pdfOnly;
+}
+
+/* ---------- Query ---------- */
+function buildQuery(){
+  let q = PROFILES[activeTab].subjectQuery;
+  const age = document.getElementById('age').value;
+  if (age) q += " newer_than:"+age;
+  const froms = document.getElementById('froms').value.trim();
+  if (froms){
+    const doms = froms.split(",").map(s=>s.trim()).filter(Boolean);
+    if (doms.length) q += " (" + doms.map(d=>`from:${d}`).join(" OR ") + ")";
+  }
+  if (document.getElementById('attachments').checked) q += " has:attachment";
+  if (document.getElementById('pdfOnly').checked)      q += " filename:pdf";
+  q += " -in:spam -in:trash category:primary";
+  return q.trim();
+}
+
+/* ---------- Gmail helpers ---------- */
+async function gFetch(path, params = {}) {
+  await ensureToken();
+  const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/" + path);
+  for (const [k,v] of Object.entries(params)){
+    if (Array.isArray(v)) v.forEach(val=>url.searchParams.append(k,val));
+    else if (v!==undefined && v!==null && v!=="") url.searchParams.set(k,v);
+  }
+  const res = await fetch(url, { headers:{Authorization:`Bearer ${accessToken}`} });
+  if (res.status===401){ await refreshToken(); return gFetch(path, params); }
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+async function ensureToken(){
+  if (accessToken) return;
+  await new Promise(r=>{
+    tokenClient.callback = tok=>{ accessToken = tok.access_token; r(); };
+    tokenClient.requestAccessToken({prompt:'consent'});
+  });
+}
+async function refreshToken(){
+  return new Promise(r=>{
+    tokenClient.callback = tok=>{ accessToken = tok.access_token; r(); };
+    tokenClient.requestAccessToken({prompt:''});
+  });
+}
+async function showUser(){
+  try{
+    const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo",{headers:{Authorization:`Bearer ${accessToken}`}});
+    document.getElementById('who').textContent = r.ok ? `Signed in as ${(await r.json()).email||""}` : "Signed in";
+  }catch(_){ document.getElementById('who').textContent = "Signed in"; }
+}
+function fmtDate(ms){ const d=new Date(Number(ms)); return d.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}); }
+
+/* ---------- Search & render ---------- */
+async function runSearch(){
+  if (!accessToken){ document.getElementById('signin').click(); return; }
+  document.getElementById('results').innerHTML="";
+  document.getElementById('moreWrap').classList.add('hide');
+  nextPageToken=null;
+  lastQuery = buildQuery();
+  document.getElementById('status').classList.remove('hide');
+  await fetchMessages(lastQuery);
+  document.getElementById('status').classList.add('hide');
+}
+
+async function fetchMessages(q, pageTok=null){
+  try{
+    const list = await gFetch("messages",{q,maxResults:20,pageToken:pageTok||""});
+    nextPageToken = list.nextPageToken || null;
+    document.getElementById('moreWrap').classList.toggle('hide', !nextPageToken);
+
+    if (!list.messages?.length){
+      if (!pageTok) document.getElementById('results').innerHTML = `<div class="card">No matching emails found.</div>`;
+      return;
+    }
+
+    // metadata first
+    const metas = await Promise.all(list.messages.map(m =>
+      gFetch(`messages/${m.id}`,{format:"metadata",metadataHeaders:["Subject","From","Date"]})
+        .then(meta=>({m,meta})).catch(()=>({m,meta:{}}))
+    ));
+
+    for (const {m,meta} of metas){
+      const headers = meta.payload?.headers || [];
+      const H = n => headers.find(x=>x.name===n)?.value || "";
+      const subject = H("Subject") || "(no subject)";
+      const from    = H("From")    || "";
+      const dateStr = H("Date")    || (meta.internalDate?fmtDate(meta.internalDate):"");
+
+      const card = document.createElement("div");
+      card.className="card"; card.id=`card-${m.id}`;
+      card.innerHTML = `
+        <div class="row" style="justify-content:space-between">
+          <div><a target="_blank" rel="noopener" href="https://mail.google.com/mail/u/0/#inbox/${m.id}"><b>${escapeHtml(subject)}</b></a></div>
+          <div><small>${escapeHtml(dateStr)}</small></div>
+        </div>
+        <div><small>${escapeHtml(from)}</small></div>
+        <div id="load-${m.id}" class="row" style="margin-top:6px"><div class="spinner"></div><small>&nbsp;Loading snippet & attachments…</small></div>
+        <div id="snip-${m.id}" style="margin-top:6px"></div>
+        <div id="att-${m.id}" class="row" style="margin-top:8px"></div>`;
+      document.getElementById('results').appendChild(card);
+    }
+
+    // full bodies (limited concurrency)
+    const queue = metas.map(x=>x.m.id);
+    const workers = Math.min(6, queue.length);
+    await Promise.all(new Array(workers).fill(0).map(async ()=>{
+      while(queue.length){
+        const id = queue.shift();
+        const full = await gFetch(`messages/${id}`,{format:"full"});
+        document.getElementById(`load-${id}`)?.remove();
+        document.getElementById(`snip-${id}`).innerHTML = `<small>${escapeHtml(full.snippet||"")}</small>`;
+        const atts = findAttachments(full);
+        if (atts.length){
+          const box = document.getElementById(`att-${id}`);
+          for (const a of atts){
+            const btn = document.createElement("button");
+            btn.textContent = `⬇ ${a.filename}`;
+            btn.onclick = () => downloadAttachment(full.id, a.attachmentId, a.filename);
+            box.appendChild(btn);
+          }
+        }
+      }
+    }));
+  }catch(e){
+    console.error(e);
+    document.getElementById('results').innerHTML = `<div class="card" style="border-color:var(--bad)">Error: ${escapeHtml(e.message||String(e))}</div>`;
+  }
+}
+
+function findAttachments(fullMsg){
+  const out=[];
+  const walk=p=>{
+    if (!p) return;
+    if (p.filename && p.body?.attachmentId) out.push({filename:p.filename,attachmentId:p.body.attachmentId});
+    if (p.parts) p.parts.forEach(walk);
+  };
+  walk(fullMsg.payload);
+  return document.getElementById('pdfOnly').checked ? out.filter(a=>/\.pdf$/i.test(a.filename||"")) : out;
+}
+
+async function downloadAttachment(msgId,attId,filename){
+  const data = await gFetch(`messages/${msgId}/attachments/${attId}`);
+  const b64 = (data.data||"").replace(/-/g,'+').replace(/_/g,'/');
+  const blob = b64ToBlob(b64);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || "attachment";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ---------- utils ---------- */
+function escapeHtml(s){ return String(s||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])) }
+function b64ToBlob(b64){
+  const byteChars = atob(b64);
+  const arr = new Uint8Array(byteChars.length);
+  for (let i=0;i<byteChars.length;i++) arr[i]=byteChars.charCodeAt(i);
+  return new Blob([arr],{type:"application/octet-stream"});
+}
+</script>
+</body>
+</html>
