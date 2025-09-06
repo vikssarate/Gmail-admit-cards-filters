@@ -24,13 +24,9 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
 .hide{display:none}
 .spinner{width:16px;height:16px;border:2px solid #ffffff33;border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-
-/* Tabs */
 .tabs{display:flex;gap:8px;margin-bottom:8px}
 .tabbtn{border:1px solid var(--line);background:#12162a;padding:8px 12px;border-radius:9px}
 .tabbtn.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
-
-/* Pills line showing what we search in this tab */
 .pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .pill{border:1px solid var(--line);border-radius:999px;padding:4px 8px;font-size:12px;background:#101429}
 </style>
@@ -47,13 +43,11 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
 
 <div class="wrap">
   <div class="panel">
-    <!-- Tabs -->
     <div class="tabs">
       <button class="tabbtn active" id="tab-apps">Applications / Registration</button>
       <button class="tabbtn" id="tab-admit">Admit Cards / Hall Tickets</button>
     </div>
 
-    <!-- Filters -->
     <div class="row">
       <label>From (optional): <input id="froms" placeholder="ssc, nta, upsc, ibps, mpsc, rrb, sbi"></label>
       <label>Newer than:
@@ -70,7 +64,6 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
       <button id="saveFilters">Save filters</button>
     </div>
 
-    <!-- Shows which keywords this tab uses -->
     <div class="pills" id="searchPills"></div>
 
     <div style="margin-top:8px">
@@ -78,7 +71,7 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
     </div>
   </div>
 
-  <div id="status" class="row hide" style="margin-top:10px"><div class="spinner"></div><small> &nbsp;Working…</small></div>
+  <div id="status" class="row hide" style="margin-top:10px"><div class="spinner"></div><small>&nbsp;Working…</small></div>
   <div id="results"></div>
   <div id="moreWrap" class="hide" style="margin-top:10px"><button id="more">Load more</button></div>
 </div>
@@ -88,14 +81,11 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
   <small><a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Revoke access</a></small>
 </footer>
 
-<!-- Google Identity Services -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
-/*** CONFIG – your Web Client ID (safe to expose) ***/
 const CLIENT_ID = "400018244267-telreonavckttsvjpavquqkg4c6nrsej.apps.googleusercontent.com";
 const SCOPES   = ["https://www.googleapis.com/auth/gmail.readonly","openid","email","profile"].join(" ");
 
-/* Tab profiles (queries & defaults) */
 const PROFILES = {
   apps: {
     name: "Applications / Registration",
@@ -106,11 +96,17 @@ const PROFILES = {
   },
   admit: {
     name: "Admit Cards / Hall Tickets",
-    // >>> widened keywords so "Intimation for Online Exam" & similar match
+    /* Official-only + ad-exclusions */
     subjectQuery:
-      'subject:("admit card" OR "hall ticket" OR "call letter" OR "e-admit" OR "e-call letter" OR "exam city intimation" OR "exam centre" OR "download admit card" OR "intimation for online exam" OR "online exam" OR "exam intimation" OR "exam date" OR "exam schedule" OR "test date" OR "computer based test" OR "CBT schedule" OR MIDC OR IBPS) OR from:(ibps OR ibps.in OR ibps.org OR ibpsre OR mail.digialm.com OR cdn.digialm.com)',
-    pills: ["admit card","hall ticket","call letter","e-admit","e-call letter","exam city intimation","exam centre","download admit card","intimation for online exam","online exam","exam date/schedule","computer based test","MIDC","IBPS"],
-    // attachments off by default (many intimations are body-only)
+      '(subject:("admit card" OR "hall ticket" OR "call letter" OR "e-admit" OR "e-call letter" OR "exam city intimation" OR "exam centre" OR "download admit card" OR "intimation for online exam" OR "online exam" OR "exam intimation" OR "exam date" OR "exam schedule" OR "test date" OR "computer based test" OR "CBT schedule") OR from:(ibps OR ibpsre OR ibps.in OR digialm.com OR cdn.digialm.com OR midcindia.org OR ssc.nic.in OR upsc.gov.in OR nta.ac.in OR mpsc.gov.in)) -from:(guidely.in OR oliveboard.in OR testbook.com OR adda247.com OR byjus.com OR gradeup.co) -subject:(mock OR free OR salary OR "job profile" OR "notification out" OR scholarship OR "apply online" OR "prep plan" OR "memory based" OR "free pdf" OR practice OR "last date")',
+    pills: [
+      "admit card","hall ticket","call letter","e-admit","e-call letter",
+      "exam city intimation","exam centre","intimation for online exam",
+      "exam date/schedule","computer based test",
+      "official: ibps, digialm, midcindia, ssc, upsc, nta, mpsc",
+      "ads removed: guidely/oliveboard/testbook/adda247/byjus/gradeup",
+      "blocked words: mock, free, salary, notification out, scholarship, apply online, prep plan, memory based, free pdf, practice, last date"
+    ],
     defaults: { attachments:false, pdfOnly:false, age:"12m" }
   }
 };
@@ -118,9 +114,8 @@ const PROFILES = {
 let activeTab = "apps";
 let accessToken = null, nextPageToken = null, lastQuery = null, tokenClient;
 
-/* ---------- Auth ---------- */
 window.onload = () => {
-  restoreFilters();            // per-tab
+  restoreFilters();
   setupAuth();
   wireUI();
   renderPills();
@@ -134,7 +129,7 @@ function setupAuth(){
       accessToken = tok.access_token;
       await showUser();
       document.getElementById('signout').classList.remove('hide');
-      runSearch(); // auto-search after sign-in
+      runSearch();
     }
   });
 }
@@ -191,7 +186,6 @@ function restoreFilters(){
   document.getElementById("pdfOnly").checked     = s?.pdfOnly ?? d.pdfOnly;
 }
 
-/* ---------- Query ---------- */
 function buildQuery(){
   let q = PROFILES[activeTab].subjectQuery;
   const age = document.getElementById('age').value;
@@ -203,12 +197,10 @@ function buildQuery(){
   }
   if (document.getElementById('attachments').checked) q += " has:attachment";
   if (document.getElementById('pdfOnly').checked)      q += " filename:pdf";
-  // NOTE: removed hard category:primary so Updates/Promotions are included
   q += " -in:spam -in:trash";
   return q.trim();
 }
 
-/* ---------- Gmail helpers ---------- */
 async function gFetch(path, params = {}) {
   await ensureToken();
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/" + path);
@@ -242,7 +234,6 @@ async function showUser(){
 }
 function fmtDate(ms){ const d=new Date(Number(ms)); return d.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}); }
 
-/* ---------- Search & render ---------- */
 async function runSearch(){
   if (!accessToken){ document.getElementById('signin').click(); return; }
   document.getElementById('results').innerHTML="";
@@ -265,7 +256,6 @@ async function fetchMessages(q, pageTok=null){
       return;
     }
 
-    // metadata first
     const metas = await Promise.all(list.messages.map(m =>
       gFetch(`messages/${m.id}`,{format:"metadata",metadataHeaders:["Subject","From","Date"]})
         .then(meta=>({m,meta})).catch(()=>({m,meta:{}}))
@@ -292,7 +282,6 @@ async function fetchMessages(q, pageTok=null){
       document.getElementById('results').appendChild(card);
     }
 
-    // full bodies (limited concurrency)
     const queue = metas.map(x=>x.m.id);
     const workers = Math.min(6, queue.length);
     await Promise.all(new Array(workers).fill(0).map(async ()=>{
@@ -341,7 +330,6 @@ async function downloadAttachment(msgId,attId,filename){
   URL.revokeObjectURL(a.href);
 }
 
-/* ---------- utils ---------- */
 function escapeHtml(s){ return String(s||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m])) }
 function b64ToBlob(b64){
   const byteChars = atob(b64);
