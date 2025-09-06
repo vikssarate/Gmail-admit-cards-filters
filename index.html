@@ -106,10 +106,12 @@ const PROFILES = {
   },
   admit: {
     name: "Admit Cards / Hall Tickets",
+    // >>> widened keywords so "Intimation for Online Exam" & similar match
     subjectQuery:
-      'subject:("admit card" OR "hall ticket" OR "call letter" OR "e-admit" OR "exam city intimation" OR "exam centre" OR "download admit card")',
-    pills: ["admit card","hall ticket","call letter","e-admit","exam city intimation","exam centre","download admit card"],
-    defaults: { attachments:true, pdfOnly:false, age:"12m" }
+      'subject:("admit card" OR "hall ticket" OR "call letter" OR "e-admit" OR "e-call letter" OR "exam city intimation" OR "exam centre" OR "download admit card" OR "intimation for online exam" OR "online exam" OR "exam intimation" OR "exam date" OR "exam schedule" OR "test date" OR "computer based test" OR "CBT schedule" OR MIDC OR IBPS) OR from:(ibps OR ibps.in OR ibps.org OR ibpsre OR mail.digialm.com OR cdn.digialm.com)',
+    pills: ["admit card","hall ticket","call letter","e-admit","e-call letter","exam city intimation","exam centre","download admit card","intimation for online exam","online exam","exam date/schedule","computer based test","MIDC","IBPS"],
+    // attachments off by default (many intimations are body-only)
+    defaults: { attachments:false, pdfOnly:false, age:"12m" }
   }
 };
 
@@ -201,7 +203,8 @@ function buildQuery(){
   }
   if (document.getElementById('attachments').checked) q += " has:attachment";
   if (document.getElementById('pdfOnly').checked)      q += " filename:pdf";
-  q += " -in:spam -in:trash category:primary";
+  // NOTE: removed hard category:primary so Updates/Promotions are included
+  q += " -in:spam -in:trash";
   return q.trim();
 }
 
