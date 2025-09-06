@@ -96,16 +96,25 @@ const PROFILES = {
   },
   admit: {
     name: "Admit Cards / Hall Tickets",
-    /* Official-only + ad-exclusions */
+    /* Admit/hall-ticket always; intimation/schedule only when from official senders.
+       Also excludes registration/ads/notifications noise. */
     subjectQuery:
-      '(subject:("admit card" OR "hall ticket" OR "call letter" OR "e-admit" OR "e-call letter" OR "exam city intimation" OR "exam centre" OR "download admit card" OR "intimation for online exam" OR "online exam" OR "exam intimation" OR "exam date" OR "exam schedule" OR "test date" OR "computer based test" OR "CBT schedule") OR from:(ibps OR ibpsre OR ibps.in OR digialm.com OR cdn.digialm.com OR midcindia.org OR ssc.nic.in OR upsc.gov.in OR nta.ac.in OR mpsc.gov.in)) -from:(guidely.in OR oliveboard.in OR testbook.com OR adda247.com OR byjus.com OR gradeup.co) -subject:(mock OR free OR salary OR "job profile" OR "notification out" OR scholarship OR "apply online" OR "prep plan" OR "memory based" OR "free pdf" OR practice OR "last date")',
+      '(' +
+        // direct admit artifacts
+        'subject:("admit card" OR "hall ticket" OR "call letter" OR "e-admit" OR "e-call letter" OR "download admit card")' +
+        ' OR ' +
+        // intimation/schedule but require official sender
+        '(subject:("exam city intimation" OR "exam centre" OR "intimation for online exam" OR "online exam" OR "exam intimation" OR "exam date" OR "exam schedule" OR "test date" OR "computer based test" OR "CBT schedule") AND from:(ibps OR ibpsre OR ibps.in OR digialm.com OR cdn.digialm.com OR midcindia.org OR ssc.nic.in OR upsc.gov.in OR nta.ac.in OR mpsc.gov.in))' +
+      ')' +
+      // exclude ad/coaching domains
+      ' -from:(guidely.in OR oliveboard.in OR testbook.com OR adda247.com OR byjus.com OR gradeup.co)' +
+      // exclude common non-admit subjects
+      ' -subject:(application OR registration OR "provisional registration" OR "registration number" OR "apply online" OR "recruitment process" OR notification OR "notification out" OR scholarship OR mock OR free OR salary OR "job profile" OR "prep plan" OR "memory based" OR "free pdf" OR practice OR "last date")',
     pills: [
-      "admit card","hall ticket","call letter","e-admit","e-call letter",
-      "exam city intimation","exam centre","intimation for online exam",
-      "exam date/schedule","computer based test",
-      "official: ibps, digialm, midcindia, ssc, upsc, nta, mpsc",
-      "ads removed: guidely/oliveboard/testbook/adda247/byjus/gradeup",
-      "blocked words: mock, free, salary, notification out, scholarship, apply online, prep plan, memory based, free pdf, practice, last date"
+      "admit card / hall ticket / call letter",
+      "intimation & schedule (official senders only)",
+      "ads blocked: guidely / oliveboard / testbook / adda247 / byjus / gradeup",
+      "blocked words: application / registration / apply online / notification / scholarship / mock / free / salary / job profile / prep plan / memory based / free pdf / practice / last date"
     ],
     defaults: { attachments:false, pdfOnly:false, age:"12m" }
   }
