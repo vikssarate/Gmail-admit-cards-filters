@@ -50,7 +50,7 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
     </div>
 
     <div class="row">
-      <label>From (optional): <input id="froms" placeholder="ssc, nta, upsc, ibps, mpsc, rrb, sbi"></label>
+      <label>From (optional): <input id="froms" placeholder="Add extra official domains (comma-separated)"></label>
       <label>Newer than:
         <select id="age">
           <option value="6m">6 months</option>
@@ -87,6 +87,19 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
 const CLIENT_ID = "400018244267-telreonavckttsvjpavquqkg4c6nrsej.apps.googleusercontent.com";
 const SCOPES   = ["https://www.googleapis.com/auth/gmail.readonly","openid","email","profile"].join(" ");
 
+/* Official sender domains used to strictly filter the Results tab.
+   Add/remove as needed. You can also type more in the “From” box. */
+const OFFICIAL_RESULT_DOMAINS = [
+  // Central recruiting/commissions
+  "ibps.in","ssc.nic.in","ssc.gov.in","upsc.gov.in","nta.ac.in","mpsc.gov.in",
+  // Railways (centralised)
+  "rrbcdg.gov.in",
+  // Public sector banks (common examples)
+  "sbi.co.in","bankofbaroda.co.in","bankofmaharashtra.in","unionbankofindia.co.in",
+  // Other official bodies (optional, keep slim)
+  "rbi.org.in","licindia.in","sebi.gov.in"
+];
+
 const PROFILES = {
   apps: {
     name: "Applications / Registration",
@@ -97,19 +110,13 @@ const PROFILES = {
   },
   admit: {
     name: "Admit Cards / Hall Tickets",
-    /* Admit/hall-ticket always; intimation/schedule only when from official senders.
-       Also excludes registration/ads/notifications noise. */
     subjectQuery:
       '(' +
-        // direct admit artifacts
         'subject:("admit card" OR "hall ticket" OR "call letter" OR "e-admit" OR "e-call letter" OR "download admit card")' +
         ' OR ' +
-        // intimation/schedule but require official sender
         '(subject:("exam city intimation" OR "exam centre" OR "intimation for online exam" OR "online exam" OR "exam intimation" OR "exam date" OR "exam schedule" OR "test date" OR "computer based test" OR "CBT schedule") AND from:(ibps OR ibpsre OR ibps.in OR digialm.com OR cdn.digialm.com OR midcindia.org OR ssc.nic.in OR upsc.gov.in OR nta.ac.in OR mpsc.gov.in))' +
       ')' +
-      // exclude ad/coaching domains
       ' -from:(guidely.in OR oliveboard.in OR testbook.com OR adda247.com OR byjus.com OR gradeup.co)' +
-      // exclude common non-admit subjects
       ' -subject:(application OR registration OR "provisional registration" OR "registration number" OR "apply online" OR "recruitment process" OR notification OR "notification out" OR scholarship OR mock OR free OR salary OR "job profile" OR "prep plan" OR "memory based" OR "free pdf" OR practice OR "last date")',
     pills: [
       "admit card / hall ticket / call letter",
@@ -121,28 +128,23 @@ const PROFILES = {
   },
   result: {
     name: "Results / Scorecards",
-    /* Focus on result/scorecard/marks/shortlist mails.
-       Intimation-only phrases allowed when from official senders. */
+    /* We keep only the subject logic here. The FROM restriction is forced in buildQuery() using OFFICIAL_RESULT_DOMAINS (+ any user additions). */
     subjectQuery:
       '(' +
-        // direct result artifacts
         'subject:(result OR "final result" OR "result status" OR scorecard OR "score card" OR marks OR "marks obtained" OR "normalized score" OR shortlisted OR "short list" OR "provisional allotment" OR "final allotment" OR "waiting list" OR "cut-off" OR "cut off")' +
         ' OR ' +
-        // allow intimation-of-result only from official senders
-        '(subject:("intimation of result" OR "result status" OR "release of result" OR "view result") AND from:(ibps OR ibpsre OR ibps.in OR ssc.nic.in OR upsc.gov.in OR nta.ac.in OR mpsc.gov.in OR rrbcdg.gov.in OR rrb OR sbi.co.in OR bankofbaroda.co.in OR bankofmaharashtra.in OR unionbankofindia.co.in))' +
+        'subject:("intimation of result" OR "release of result" OR "view result")' +
       ')' +
-      // block noisy promos/coaching
       ' -from:(guidely.in OR oliveboard.in OR testbook.com OR adda247.com OR byjus.com OR gradeup.co)' +
-      // block non-result topics
       ' -subject:(application OR registration OR "admit card" OR "hall ticket" OR "call letter" OR notification OR syllabus OR vacancy OR "apply online" OR mock OR practice OR "free pdf" OR "prep plan")',
     pills: [
       "result / final result / scorecard / marks",
       "shortlisted / provisional or final allotment / waiting list",
-      "official intimation allowed (ibps, ssc, upsc, nta, mpsc, rrb, sbi…)",
-      "ads blocked: guidely / oliveboard / testbook / adda247 / byjus / gradeup",
-      "blocked words: application / registration / admit card / notification / syllabus / vacancy / mock / free pdf / prep plan"
+      "STRICT: only official sender domains",
+      "ads blocked + non-result topics filtered"
     ],
-    defaults: { attachments:false, pdfOnly:false, age:"24m" }
+    defaults: { attachments:false, pdfOnly:false, age:"24m" },
+    officialFrom: OFFICIAL_RESULT_DOMAINS
   }
 };
 
@@ -225,15 +227,29 @@ function restoreFilters(){
 
 function buildQuery(){
   let q = PROFILES[activeTab].subjectQuery;
+
+  // date/window
   const age = document.getElementById('age').value;
   if (age) q += " newer_than:"+age;
-  const froms = document.getElementById('froms').value.trim();
-  if (froms){
-    const doms = froms.split(",").map(s=>s.trim()).filter(Boolean);
-    if (doms.length) q += " (" + doms.map(d=>`from:${d}`).join(" OR ") + ")";
+
+  // user-provided extra domains
+  const fromsRaw = document.getElementById('froms').value.trim();
+  const extra = fromsRaw ? fromsRaw.split(",").map(s=>s.trim()).filter(Boolean) : [];
+
+  // FROM logic
+  if (activeTab === "result") {
+    // Always enforce official domains; OR with user extras
+    const allow = [...(PROFILES.result.officialFrom || []), ...extra];
+    if (allow.length) q += " (" + allow.map(d=>`from:${d}`).join(" OR ") + ")";
+  } else if (extra.length) {
+    // Other tabs: only add if user typed
+    q += " (" + extra.map(d=>`from:${d}`).join(" OR ") + ")";
   }
+
+  // artifacts
   if (document.getElementById('attachments').checked) q += " has:attachment";
   if (document.getElementById('pdfOnly').checked)      q += " filename:pdf";
+
   q += " -in:spam -in:trash";
   return q.trim();
 }
