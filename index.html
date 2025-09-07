@@ -46,6 +46,7 @@ kbd{background:#0002;border:1px solid var(--line);border-radius:6px;padding:2px 
     <div class="tabs">
       <button class="tabbtn active" id="tab-apps">Applications / Registration</button>
       <button class="tabbtn" id="tab-admit">Admit Cards / Hall Tickets</button>
+      <button class="tabbtn" id="tab-result">Results / Scorecards</button>
     </div>
 
     <div class="row">
@@ -114,9 +115,34 @@ const PROFILES = {
       "admit card / hall ticket / call letter",
       "intimation & schedule (official senders only)",
       "ads blocked: guidely / oliveboard / testbook / adda247 / byjus / gradeup",
-      "blocked words: application / registration / apply online / notification / scholarship / mock / free / salary / job profile / prep plan / memory based / free pdf / practice / last date"
+      "blocked words: application / registration / apply online / notification / scholarship / mock / free pdf / practice / last date"
     ],
     defaults: { attachments:false, pdfOnly:false, age:"12m" }
+  },
+  result: {
+    name: "Results / Scorecards",
+    /* Focus on result/scorecard/marks/shortlist mails.
+       Intimation-only phrases allowed when from official senders. */
+    subjectQuery:
+      '(' +
+        // direct result artifacts
+        'subject:(result OR "final result" OR "result status" OR scorecard OR "score card" OR marks OR "marks obtained" OR "normalized score" OR shortlisted OR "short list" OR "provisional allotment" OR "final allotment" OR "waiting list" OR "cut-off" OR "cut off")' +
+        ' OR ' +
+        // allow intimation-of-result only from official senders
+        '(subject:("intimation of result" OR "result status" OR "release of result" OR "view result") AND from:(ibps OR ibpsre OR ibps.in OR ssc.nic.in OR upsc.gov.in OR nta.ac.in OR mpsc.gov.in OR rrbcdg.gov.in OR rrb OR sbi.co.in OR bankofbaroda.co.in OR bankofmaharashtra.in OR unionbankofindia.co.in))' +
+      ')' +
+      // block noisy promos/coaching
+      ' -from:(guidely.in OR oliveboard.in OR testbook.com OR adda247.com OR byjus.com OR gradeup.co)' +
+      // block non-result topics
+      ' -subject:(application OR registration OR "admit card" OR "hall ticket" OR "call letter" OR notification OR syllabus OR vacancy OR "apply online" OR mock OR practice OR "free pdf" OR "prep plan")',
+    pills: [
+      "result / final result / scorecard / marks",
+      "shortlisted / provisional or final allotment / waiting list",
+      "official intimation allowed (ibps, ssc, upsc, nta, mpsc, rrb, sbi…)",
+      "ads blocked: guidely / oliveboard / testbook / adda247 / byjus / gradeup",
+      "blocked words: application / registration / admit card / notification / syllabus / vacancy / mock / free pdf / prep plan"
+    ],
+    defaults: { attachments:false, pdfOnly:false, age:"24m" }
   }
 };
 
@@ -152,18 +178,20 @@ function wireUI(){
     document.getElementById('moreWrap').classList.add('hide');
     document.getElementById('who').textContent="Signed out";
   };
-  document.getElementById('tab-apps').onclick  = () => switchTab("apps");
-  document.getElementById('tab-admit').onclick = () => switchTab("admit");
-  document.getElementById('search').onclick    = runSearch;
-  document.getElementById('more').onclick      = () => fetchMessages(lastQuery, nextPageToken);
+  document.getElementById('tab-apps').onclick   = () => switchTab("apps");
+  document.getElementById('tab-admit').onclick  = () => switchTab("admit");
+  document.getElementById('tab-result').onclick = () => switchTab("result");
+  document.getElementById('search').onclick     = runSearch;
+  document.getElementById('more').onclick       = () => fetchMessages(lastQuery, nextPageToken);
   document.getElementById('saveFilters').onclick = saveFilters;
 }
 
 function switchTab(tab){
   if (activeTab===tab) return;
   activeTab=tab;
-  document.getElementById('tab-apps').classList.toggle('active',tab==="apps");
-  document.getElementById('tab-admit').classList.toggle('active',tab==="admit");
+  document.getElementById('tab-apps').classList.toggle('active',  tab==="apps");
+  document.getElementById('tab-admit').classList.toggle('active', tab==="admit");
+  document.getElementById('tab-result').classList.toggle('active',tab==="result");
   restoreFilters();
   renderPills();
   runSearch();
